@@ -14,32 +14,29 @@
 
 #include <Arduino.h>
 
+/* WiFi */
 #include <ESP8266WiFi.h> // WIFI support
-#include <ESP8266mDNS.h> // For network discovery
-#include <WiFiUdp.h> // OSC over UDP
 #include <ArduinoOTA.h> // Updates over the air
+char hostname[32] = {0};
 
-// WiFi Manager
+/* mDNS */
+#include <ESP8266mDNS.h> // For network discovery
+
+/* WiFi Manager */
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h> 
 
-// MQTT
+/* MQTT */
 #include <PubSubClient.h>
 char topic[40] = {0};
-
-/* WIFI */
-char hostname[32] = {0};
-
-/* MQTT */
 WiFiClient wifiClient;
-PubSubClient client(wifiClient);
-const char* broker = "10.81.95.165";
+PubSubClient mqtt(wifiClient);
 
 /* Button */
 unsigned long buttonTimeout = 0;
 
-/* leds */
+/* LEDs */
 unsigned long ledTimeout = 0;
 int activeLed = 0;
 
@@ -50,9 +47,10 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 }
 
 void reconnect() {
-  while (!client.connected()) {
-    Serial.println("MQTT Connecting...");
-    if (client.connect(hostname)) {
+  Serial.print("MQTT Connecting");
+  while (!mqtt.connected()) {
+    if (mqtt.connect(hostname)) {
+      Serial.println();
       Serial.println("MQTT connected");
     } else {
       Serial.print(".");
@@ -63,20 +61,20 @@ void reconnect() {
 
 void setup()
 {
-  Serial.begin(9600);
-
   /* LED */
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
-  delay(1000);
+  /* Serial */
+  Serial.begin(9600);
+  Serial.println(F("Setup..."));
 
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   WiFiManager wifiManager;
   wifiManager.setAPCallback(configModeCallback);
   if(!wifiManager.autoConnect(hostname)) {
-    Serial.println("WiFi Connect Failed");
+    Serial.println(F("WiFi Connect Failed"));
     //reset and try again, or maybe put it to deep sleep
     ESP.reset();
     delay(1000);
@@ -109,13 +107,42 @@ void setup()
   });
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) { Serial.println(F("Auth Failed")); }
-    else if (error == OTA_BEGIN_ERROR) { Serial.println(F("Begin Failed")); }
-    else if (error == OTA_CONNECT_ERROR) { Serial.println(F("Connect Failed")); }
-    else if (error == OTA_RECEIVE_ERROR) { Serial.println(F("Receive Failed")); } 
-    else if (error == OTA_END_ERROR) { Serial.println(F("End Failed")); }
+    if (error == OTA_AUTH_ERROR) { 
+      Serial.println(F("Auth Failed")); 
+    }
+    else if (error == OTA_BEGIN_ERROR) { 
+      Serial.println(F("Begin Failed")); 
+    }
+    else if (error == OTA_CONNECT_ERROR) { 
+      Serial.println(F("Connect Failed")); 
+    }
+    else if (error == OTA_RECEIVE_ERROR) { 
+      Serial.println(F("Receive Failed"));
+    } 
+    else if (error == OTA_END_ERROR) { 
+      Serial.println(F("End Failed")); 
+    }
   });
   ArduinoOTA.begin();
+
+  // Discover MQTT broker via mDNS
+  Serial.print(F("Finding MQTT Server"));
+  while (MDNS.queryService("mqtt", "tcp") == 0) {
+    delay(1000);
+    Serial.print(F("."));
+    ArduinoOTA.handle();
+  }
+  Serial.println();
+
+  Serial.println(F("MQTT: "));
+  Serial.print(F("  "));
+  Serial.println(MDNS.hostname(0));
+  Serial.print(F("  "));
+  Serial.print(MDNS.IP(0));
+  Serial.print(F(":"));
+  Serial.println(MDNS.port(0));
+
+  mqtt.setServer(MDNS.IP(0), MDNS.port(0));
 
   // buttons
   pinMode(D1, INPUT_PULLUP); // 1
@@ -135,13 +162,8 @@ void setup()
   
   pinMode(D8, OUTPUT); // 4
   digitalWrite(D8, HIGH);
-  
-  /* MQTT */
-  client.setServer(broker, 1883);
-  // client.setCallback(callback);
 
   /* LED */
-  pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
@@ -162,12 +184,15 @@ int getButtonPressed() {
 
 void loop()
 {
+  /* OTA */
   ArduinoOTA.handle();
-  if (!client.connected())
+
+  /* MQTT */
+  if (!mqtt.connected())
   {
     reconnect();
   }
-  client.loop();
+  mqtt.loop();
 
   unsigned long currentMillis = millis();
 
@@ -180,9 +205,9 @@ void loop()
       activeLed = button;
       TurnOffAllLedsExcept(activeLed);
 
-      sprintf(topic, "%s/b%d", ESP_NAME, button);
+      sprintf(topic, "%s/b%d", hostname, button);
       Serial.print(topic);
-      client.publish(topic, "1");
+      mqtt.publish(topic, "1");
 
       buttonTimeout = currentMillis + BUTTON_TIMEOUT;
     }
